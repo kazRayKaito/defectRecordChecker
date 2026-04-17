@@ -8,7 +8,7 @@ import configparser
 from datetime import datetime, date
 from PIL import Image, ImageTk
 
-#シリアル例：02210620750025100104002714
+#シリアル例：02210620750025100104002715
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -157,7 +157,7 @@ def load_result_csv(csvFilePath, serial, imageCount):
     値が -1 または 1 の間だけ最大20個まで int として配列に格納して返す。  
   
     戻り値: (results_list, error_message)  
-      results_list ... [-1, 1, -1, ...] 最大20件（見つかった分だけ）  
+      results_list ... [-1, 1, -1, ...] 要素数はimageCount
       error_message ... 失敗時のみ文字列、成功時は None  
     """  
     if not os.path.exists(csvFilePath):  
@@ -293,8 +293,7 @@ def open_step1():
 
     serial_entry = tk.Entry(serial_row, width=20, font=("Arial", 14))
     serial_entry.pack(side=tk.LEFT, padx=(0, 8))
-    if state['caseSerial_26']:
-        serial_entry.insert(0, state['caseSerial_26'])
+    serial_entry.insert(0, state['caseSerial_26'] or '02210620750025100104002715')
     serial_entry.focus_set()
 
     status_lbl = tk.Label(frm, text="", bg=C_BG, font=("Arial", 9))
@@ -356,9 +355,13 @@ def open_image_review(title, jpgs, results_key, done_key):
 
     win = tk.Toplevel(root)
     win.title(title)
-    win.geometry("1680x1000")
-    win.grab_set()
     win.configure(bg=C_BG)
+    win.update_idletasks()
+    w, h = 1680, 1000
+    x = (win.winfo_screenwidth()  - w) // 2
+    y = (win.winfo_screenheight() - h) // 2
+    win.geometry(f"{w}x{h}+{x}+{y}")
+    win.grab_set()
 
     cur = [0]
 
@@ -443,6 +446,25 @@ def open_image_review(title, jpgs, results_key, done_key):
 
     show(0)
 
+def show_popup(msg, parent=None):
+    dlg = tk.Toplevel(parent or root)
+    dlg.title("NG画像確認")
+    dlg.resizable(False, False)
+    dlg.configure(bg=C_BG)
+    tk.Label(dlg, text=msg,
+             bg=C_BG, fg=C_NG, font=("Arial", 24, "bold"), padx=30, pady=24).pack()
+    tk.Button(dlg, text="OK", command=dlg.destroy,
+              bg=C_AVAIL, fg=C_WHITE, font=("Arial", 24, "bold"),
+              relief=tk.FLAT, padx=20, pady=8).pack(pady=(0, 20))
+    dlg.update_idletasks()
+    w = dlg.winfo_reqwidth()
+    h = dlg.winfo_reqheight()
+    x = (dlg.winfo_screenwidth()  - w) // 2
+    y = (dlg.winfo_screenheight() - h) // 2
+    dlg.geometry(f"+{x}+{y}")
+    dlg.grab_set()
+    dlg.wait_window()
+
 # ── STEP 2: NG image review (result.csv ベース) ───────────────────────────────
 def open_step2():
     # All_images フォルダを読み込む
@@ -485,6 +507,9 @@ def open_step2():
         return
 
     state['ng_jpgs'] = ng_jpgs
+
+    show_popup(f"NG画像が{len(ng_jpgs)}枚あります。\n「現物」を確認し、良否を判定してください。")
+
     open_image_review("STEP 2 — NG画像確認", ng_jpgs, 'ng_results', 'step2_done')
 
 # ── STEP 3: All image review ──────────────────────────────────────────────────
