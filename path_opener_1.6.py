@@ -446,9 +446,9 @@ def open_image_review(title, jpgs, results_key, done_key):
 
     show(0)
 
-def show_popup(msg, parent=None):
+def show_popup(msg, title="確認", parent=None):
     dlg = tk.Toplevel(parent or root)
-    dlg.title("NG画像確認")
+    dlg.title(title)
     dlg.resizable(False, False)
     dlg.configure(bg=C_BG)
     tk.Label(dlg, text=msg,
@@ -464,6 +464,35 @@ def show_popup(msg, parent=None):
     dlg.geometry(f"+{x}+{y}")
     dlg.grab_set()
     dlg.wait_window()
+
+def ask_popup(msg, parent=None):
+    result = [False]
+    dlg = tk.Toplevel(parent or root)
+    dlg.title("確認")
+    dlg.resizable(False, False)
+    dlg.configure(bg=C_BG)
+    tk.Label(dlg, text=msg,
+             bg=C_BG, fg=C_TEXT, font=("Arial", 24, "bold"), padx=30, pady=24).pack()
+    btn_row = tk.Frame(dlg, bg=C_BG)
+    btn_row.pack(pady=(0, 20))
+    def yes():
+        result[0] = True
+        dlg.destroy()
+    tk.Button(btn_row, text="はい", command=yes,
+              bg=C_AVAIL, fg=C_WHITE, font=("Arial", 24, "bold"),
+              relief=tk.FLAT, padx=20, pady=8).pack(side=tk.LEFT, padx=10)
+    tk.Button(btn_row, text="いいえ", command=dlg.destroy,
+              bg=C_MUTED, fg=C_WHITE, font=("Arial", 24, "bold"),
+              relief=tk.FLAT, padx=20, pady=8).pack(side=tk.LEFT, padx=10)
+    dlg.update_idletasks()
+    w = dlg.winfo_reqwidth()
+    h = dlg.winfo_reqheight()
+    x = (dlg.winfo_screenwidth()  - w) // 2
+    y = (dlg.winfo_screenheight() - h) // 2
+    dlg.geometry(f"+{x}+{y}")
+    dlg.grab_set()
+    dlg.wait_window()
+    return result[0]
 
 # ── STEP 2: NG image review (result.csv ベース) ───────────────────────────────
 def open_step2():
@@ -531,18 +560,21 @@ def open_step3():
         messagebox.showinfo("情報", f"{all_dir}フォルダに画像ファイルが見つかりませんでした。")
         return
     state['all_jpgs'] = jpgs
+
+    show_popup(f"全体最終検査\n\n画像は全部で{state['captureImageCount']}枚あります。\n各画像の部位に欠陥がないことを\n「現物」で確認してください。")
+
     open_image_review("STEP 3 — 全画像確認", jpgs, 'all_results', 'step3_done')
 
 # ── STEP 4: Result output ─────────────────────────────────────────────────────
 def open_step4():  
     def close():
-        ans = messagebox.askyesno("確認",f"ワークの処置は完了しましたか？",parent=win)
+        ans = ask_popup("ワークの処置は完了しましたか？", parent=win)
         if ans:
             reset_state(state)
             win.destroy()
             refresh_main()
         else:
-            messagebox.showinfo("確認", f"ワークを処置してからウィンドを閉じてください",parent=win)
+            show_popup("ワークを処置してからウィンドを閉じてください", parent=win)
 
     win = tk.Toplevel(root)  
     win.title("STEP 4 — 結果出力")  
