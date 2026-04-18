@@ -4,6 +4,7 @@ import os
 import re
 import glob
 import csv
+import shutil
 import configparser
 from datetime import datetime, date
 from PIL import Image, ImageTk
@@ -14,6 +15,8 @@ from PIL import Image, ImageTk
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 RESULT_DIR  = os.path.join(BASE_DIR, "NGワーク再検査結果")
 CONFIG_PATH = os.path.join(BASE_DIR, "config.ini")
+TEMP_RESULT_DIR  = os.path.join(BASE_DIR, "Temp_Result")
+TEMP_CAPTURE_DIR  = os.path.join(BASE_DIR, "Temp_Capture")
 
 C_DONE   = "#22C55E"
 C_AVAIL  = "#2563EB"
@@ -25,13 +28,13 @@ C_MUTED  = "#6B7280"
 C_BG     = "#F9FAFB"
 
 # ── Config helpers ─────────────────────────────────────────────────────────────
-def load_config():
+def load_root_path():
     cfg = configparser.ConfigParser()
     if os.path.exists(CONFIG_PATH):
         cfg.read(CONFIG_PATH, encoding='utf-8')
     return cfg.get('Settings', 'root_path', fallback='')
 
-def save_config(root_path):
+def save_root_path(root_path):
     cfg = configparser.ConfigParser()
     cfg['Settings'] = {'root_path': root_path}
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
@@ -65,20 +68,8 @@ def extract_date_from_serial(serial):
         return date(2000 + yy, mm, dd)
     except (ValueError, IndexError):
         return None
-
-def find_capture_folder_from_serial(serial, root):
-    """
-    画像フォルダとResultファイルの該当する行を検索する。
-    serialは26桁 02210620750025100104002714
-    01 210620-7500 YYMMDD 0100 SSSS
-    Capture/YYYY-MM/yyyy-mm-DD_______SSSS/ の形式でワークフォルダを検索する。
-    シリアル日付(YYMMDD)以降の月フォルダのみを対象とする。
-    見つかった場合は画像フォルダパスとResultファイルパスを、見つからない場合はNoneを返す。
-    """
-    serial_date = extract_date_from_serial(serial)
-    if serial_date is None:
-        return None
-
+    
+def extract_candidate_months_from_serial_date(serial_date, root):
     candidate_months = []
     try:
         for entry in os.scandir(root):
@@ -91,11 +82,34 @@ def find_capture_folder_from_serial(serial, root):
                     pass
     except (PermissionError, FileNotFoundError):
         return None
+    return candidate_months
 
+def find_capture_folder_from_serial(serial, root):
+    """
+    画像フォルダとResultファイルの該当する行を検索する。
+    serialは26桁 例:01210620750025100101002714
+    01 210620-7500 yymmdd 0100 SSSS
+    Capture/YYYY-MM/YYYY-MM-DD-HH-MM-SS_[PartNo]_[Lot]_yymmdd00SSSS/ の形式でワークフォルダを検索する。
+    YYYY-MM-DDは撮像日、yyyy-mm-ddはシリアル付与日を表す。
+    シリアル日付(yymmdd)以降の月フォルダのみを対象とする。
+    見つかった場合は画像フォルダパスとResultファイルパスを、見つからない場合はNoneを返す。
+    """
+    #シリアルから日付を抽出
+    serial_date = extract_date_from_serial(serial)
+    if serial_date is None:
+        return None
+    
+    #シリアル日付以降の月フォルダを抽出
+    candidate_months = extract_candidate_months_from_serial_date(serial_date, root)
+    if candidate_months is None:
+        return None
+
+    #シリアルからフォルダ名のsuffixを生成
     yymmdd = serial[12:18]
     ssss   = serial[-4:]
     suffix = f"{yymmdd}00{ssss}"
 
+    #候補月フォルダ内を探索し、suffixが一致するフォルダとCSVを探す
     for _, month_folder in sorted(candidate_months):
         try:
             for day_folder in os.scandir(month_folder):
@@ -117,6 +131,7 @@ def find_capture_folder_from_serial(serial, root):
     return None
 
 def find_if_already_checked(serial_12):
+    #再検査結果が既に存在するか確認
     serial_12 = str(serial_12).strip()
     if not serial_12 or len(serial_12) != 12:
         return None
@@ -194,7 +209,7 @@ def load_result_csv(csvFilePath, serial, imageCount):
 # ── Application state ─────────────────────────────────────────────────────────
 def init_state():
     return {
-        'captureRootDir':    load_config(),  # Captureルートフォルダのパス（config.ini）
+        'captureRootDir':    load_root_path(),  # Captureルートフォルダのパス（config.ini）
         'caseSerial_26':     '',             # ケースシリアル26桁
         'caseSerial_12':     '',             # ケースシリアル12桁(YYMMDD00SSSS)
         'captureFolderPath': '',             # Captureフォルダのパス
@@ -216,19 +231,22 @@ def reset_state(state_dict):
     state_dict.clear()
     state_dict.update(init_state())
 
-state = init_state()
-step_btns = {}
+def clear_temp_dirs():
+    for d in (TEMP_CAPTURE_DIR, TEMP_RESULT_DIR):
+        os.makedirs(d, exist_ok=True)
+        for f in os.listdir(d):
+            fp = os.path.join(d, f)
+            if os.path.isfile(fp):
+                os.remove(fp)
 
 # ── Availability logic ────────────────────────────────────────────────────────
-def ng_all_ok():
-    return bool(state['ng_results']) and all(r == 'OK' for r in state['ng_results'])
-
+def ng_all_ok():   return bool(state['ng_results']) and all(r == 'OK' for r in state['ng_results'])
 def step2_avail(): return state['step1_done']
 def step3_avail(): return state['step2_done'] and ng_all_ok()
 def step4_avail(): return state['step2_done'] and (state['step3_done'] or not ng_all_ok())
 
 # ── Generic UI helpers ────────────────────────────────────────────────────────
-def show_popup(msg, title="確認", parent=None):
+def show_popup(title="確認", msg="", parent=None):
     dlg = tk.Toplevel(parent or root)
     dlg.transient(parent or root)
     dlg.title(title)
@@ -248,10 +266,11 @@ def show_popup(msg, title="確認", parent=None):
     dlg.grab_set()
     dlg.wait_window()
 
-def ask_popup(msg, parent=None):
+def ask_popup(title="確認", msg="", parent=None):
     result = [False]
     dlg = tk.Toplevel(parent or root)
-    dlg.title("確認")
+    dlg.transient(parent or root)
+    dlg.title(title)
     dlg.resizable(False, False)
     dlg.configure(bg=C_BG)
     tk.Label(dlg, text=msg,
@@ -373,6 +392,7 @@ def refresh_main():
 
 # ── STEP 1: serial input window ───────────────────────────────────────────────
 def open_step1():
+    clear_temp_dirs()
     win = tk.Toplevel(root)
     win.title("STEP 1 — ケースQR読取")
     win.geometry("520x220")
@@ -399,7 +419,7 @@ def open_step1():
             messagebox.showerror("エラー", f"Captureフォルダが存在しません:\n{r}", parent=win)
             return
         state['captureRootDir'] = r
-        save_config(r)
+        save_root_path(r)
         messagebox.showinfo("保存", "Captureフォルダパスを保存しました。", parent=win)
 
     tk.Button(root_row, text="保存", command=save_root,
@@ -434,7 +454,7 @@ def open_step1():
 
         root_path = state['captureRootDir']
         if not root_path or not os.path.isdir(root_path):
-            status_lbl.config(text="✗ ルートフォルダを先に設定・保存してください", fg=C_NG)
+            status_lbl.config(text="✗ Captureフォルダが見つかりません", fg=C_NG)
             return
 
         status_lbl.config(text="検索中...", fg=C_MUTED)
@@ -452,9 +472,25 @@ def open_step1():
                 text=f"✗ 既に再検査記録があります。 \n{recordResult} ", fg=C_NG)
             return
 
+        # TEMP_CAPTURE_DIR に画像をコピー（フォルダは clear_temp_dirs で作成済み）
+        status_lbl.config(text="画像データを確認中...", fg=C_MUTED)
+        win.update()
+        src_folder = result[0]
+        img_exts = {'.jpg', '.jpeg', '.png', '.bmp'}
+        for fname in os.listdir(src_folder):
+            if os.path.splitext(fname)[1].lower() in img_exts:
+                shutil.copy2(os.path.join(src_folder, fname), TEMP_CAPTURE_DIR)
+
+        # TEMP_RESULT_DIR にCSVをコピー
+        status_lbl.config(text="結果データを確認中...", fg=C_MUTED)
+        win.update()
+        src_csv = result[1]
+        temp_csv = os.path.join(TEMP_RESULT_DIR, os.path.basename(src_csv))
+        shutil.copy2(src_csv, temp_csv)
+
         state['caseSerial_26']      = serial
         state['captureFolderPath']  = result[0]
-        state['csvFilePath']        = result[1]
+        state['csvFilePath']        = temp_csv
         state['caseSerial_12']      = result[2]
         state['step1_done'] = True
         win.destroy()
@@ -541,7 +577,7 @@ def open_image_review(title, jpgs, results_key, done_key, defect_modes_key=None)
         if cur[0] > 0:
             show(cur[0] - 1)
         else:
-            if messagebox.askyesno("確認", "判定を中断しますか？", parent=win):
+            if ask_popup("確認", "判定を中断しますか？", parent=win):
                 win.destroy()
 
     def finish():
@@ -551,7 +587,7 @@ def open_image_review(title, jpgs, results_key, done_key, defect_modes_key=None)
         refresh_main()
 
     def on_close():
-        if messagebox.askyesno("確認", "判定を中断しますか？\n判定結果は保存されません。", parent=win):
+        if ask_popup("確認", "判定を中断しますか？\n判定結果は保存されません。", parent=win):
             win.destroy()
 
     win.protocol("WM_DELETE_WINDOW", on_close)
@@ -572,7 +608,7 @@ def open_image_review(title, jpgs, results_key, done_key, defect_modes_key=None)
 
 # ── STEP 2: NG image review ───────────────────────────────────────────────────
 def open_step2():
-    all_dir = state['captureFolderPath']
+    all_dir = TEMP_CAPTURE_DIR
     if not os.path.isdir(all_dir):
         messagebox.showerror("エラー", f"{all_dir}フォルダが見つかりません:\n{all_dir}")
         return
@@ -611,12 +647,12 @@ def open_step2():
 
     state['ng_jpgs'] = ng_jpgs
 
-    show_popup(f"NG画像が{len(ng_jpgs)}枚あります。\n「現物」を確認し、良否を判定してください。")
+    show_popup("確認", f"NG画像が{len(ng_jpgs)}枚あります。\n「現物」を確認し、良否を判定してください。")
     open_image_review("STEP 2 — NG画像確認", ng_jpgs, 'ng_results', 'step2_done', defect_modes_key='ng_defect_modes')
 
 # ── STEP 3: All image review ──────────────────────────────────────────────────
 def open_step3():
-    all_dir = state['captureFolderPath']
+    all_dir = TEMP_CAPTURE_DIR
     if not os.path.isdir(all_dir):
         messagebox.showerror("エラー", f"{all_dir}フォルダが見つかりません:\n{all_dir}")
         return
@@ -636,19 +672,20 @@ def open_step3():
 
     state['all_jpgs'] = jpgs
 
-    show_popup(f"最終全体検査\n\n各画像の部位に欠陥がないことを\n「現物」で確認してください。\n画像は全部で{state['captureImageCount']}枚あります。")
+    show_popup("確認", f"最終全体検査 [全{state['captureImageCount']}枚]\n\n各画像の部位に欠陥がないことを\n「現物」で確認してください")
     open_image_review("STEP 3 — 全画像確認", jpgs, 'all_results', 'step3_done', defect_modes_key='ng_defect_modes')
 
 # ── STEP 4: Result output ─────────────────────────────────────────────────────
 def open_step4():
     def close():
-        ans = ask_popup("ワークの処置は完了しましたか？", parent=win)
+        ans = ask_popup("確認", "ワークの処置は完了しましたか？", parent=win)
         if ans:
             reset_state(state)
+            clear_temp_dirs()
             win.destroy()
             refresh_main()
         else:
-            show_popup("ワークを処置してからウィンドを閉じてください", parent=win)
+            show_popup("確認", "ワークを処置してからウィンドを閉じてください", parent=win)
 
     win = tk.Toplevel(root)
     win.title("STEP 4 — 結果出力")
@@ -728,7 +765,7 @@ def open_step4():
     win.minsize(w, h)
     win.grab_set()
 
-    show_popup("結果を保存しました:\n必ずワークを処置してからウィンドを閉じてください", title="保存完了", parent=win)
+    show_popup("保存完了", "結果を保存しました:\n必ずワークを処置してからウィンドを閉じてください", parent=win)
 
 # ── Main window ───────────────────────────────────────────────────────────────
 root = tk.Tk()
@@ -736,6 +773,9 @@ root.title("不良再検査ﾌﾟﾛｸﾞﾗﾑ")
 root.geometry("380x480")
 root.resizable(False, False)
 root.configure(bg=C_BG)
+
+state = init_state()
+step_btns = {}
 
 tk.Label(root, text="不良再検査ﾌﾟﾛｸﾞﾗﾑ", bg=C_BG, fg=C_TEXT,
          font=("Arial", 12, "bold")).pack(pady=(20, 12))
